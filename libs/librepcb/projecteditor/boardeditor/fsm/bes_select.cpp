@@ -25,8 +25,11 @@
 #include "../../cmd/cmdadddevicetoboard.h"
 #include "../../cmd/cmddragselectedboarditems.h"
 #include "../../cmd/cmdflipselectedboarditems.h"
+#include "../../cmd/cmdpasteboarditems.h"
+#include "../../cmd/cmdpastefootprintitems.h"
 #include "../../cmd/cmdremoveselectedboarditems.h"
 #include "../../cmd/cmdreplacedevice.h"
+#include "../boardclipboarddatabuilder.h"
 #include "../boardeditor.h"
 #include "../boardplanepropertiesdialog.h"
 #include "../boardviapropertiesdialog.h"
@@ -39,6 +42,7 @@
 #include <librepcb/common/gridproperties.h>
 #include <librepcb/common/undostack.h>
 #include <librepcb/library/elements.h>
+#include <librepcb/libraryeditor/pkg/footprintclipboarddata.h>
 #include <librepcb/project/boards/board.h>
 #include <librepcb/project/boards/boardlayerstack.h>
 #include <librepcb/project/boards/boardselectionquery.h>
@@ -93,6 +97,8 @@ BES_Base::ProcRetVal BES_Select::process(BEE_Base* event) noexcept {
       return processSubStateIdle(event);
     case SubState_Moving:
       return processSubStateMoving(event);
+    case SubState_Pasting:
+      return processSubStatePasting(event);
     default:
       return PassToParentState;
   }
@@ -105,6 +111,17 @@ bool BES_Select::entry(BEE_Base* event) noexcept {
 
 bool BES_Select::exit(BEE_Base* event) noexcept {
   Q_UNUSED(event);
+
+  if (mSubState == SubState_Pasting) {
+    try {
+      mUndoStack.abortCmdGroup();
+    } catch (...) {
+      return false;
+    }
+  }
+  mSelectedItemsDragCommand.reset();
+  mSubState = SubState_Idle;
+
   return true;
 }
 
@@ -121,13 +138,15 @@ BES_Base::ProcRetVal BES_Select::processSubStateIdle(BEE_Base* event) noexcept {
       }
       return PassToParentState;
     case BEE_Base::Edit_Cut:
-      // cutSelectedItems();
+      if (copySelectedItemsToClipboard()) {
+        removeSelectedItems();
+      }
       return ForceStayInState;
     case BEE_Base::Edit_Copy:
-      // copySelectedItems();
+      copySelectedItemsToClipboard();
       return ForceStayInState;
     case BEE_Base::Edit_Paste:
-      // pasteItems();
+      pasteFromClipboard();
       return ForceStayInState;
     case BEE_Base::Edit_RotateCW:
       rotateSelectedItems(-Angle::deg90());
@@ -705,6 +724,93 @@ BES_Base::ProcRetVal BES_Select::processSubStateMovingSceneEvent(
   return PassToParentState;
 }
 
+BES_Base::ProcRetVal BES_Select::processSubStatePasting(
+    BEE_Base* event) noexcept {
+  switch (event->getType()) {
+    case BEE_Base::AbortCommand:
+      Q_ASSERT(!mSelectedItemsDragCommand.isNull());
+      try {
+        mSelectedItemsDragCommand.reset();
+        mUndoStack.abortCmdGroup();
+        mSubState = SubState_Idle;
+      } catch (Exception& e) {
+        QMessageBox::critical(&mEditor, tr("Error"), e.getMsg());
+      }
+      return ForceStayInState;
+    case BEE_Base::Edit_RotateCW:
+      rotateSelectedItems(-Angle::deg90());
+      return ForceStayInState;
+    case BEE_Base::Edit_RotateCCW:
+      rotateSelectedItems(Angle::deg90());
+      return ForceStayInState;
+    case BEE_Base::GraphicsViewEvent:
+      return processSubStatePastingSceneEvent(event);
+    default:
+      return PassToParentState;
+  }
+}
+
+BES_Base::ProcRetVal BES_Select::processSubStatePastingSceneEvent(
+    BEE_Base* event) noexcept {
+  QEvent* qevent = BEE_RedirectedQEvent::getQEventFromBEE(event);
+  Q_ASSERT(qevent);
+  if (!qevent) return PassToParentState;
+
+  switch (qevent->type()) {
+    case QEvent::GraphicsSceneMousePress: {
+      QGraphicsSceneMouseEvent* sceneEvent =
+          dynamic_cast<QGraphicsSceneMouseEvent*>(qevent);
+      Q_ASSERT(sceneEvent);
+      if (!sceneEvent) break;
+      if (sceneEvent->button() == Qt::LeftButton) {
+        // stop moving items (set position of all selected elements permanent)
+        Q_ASSERT(!mSelectedItemsDragCommand.isNull());
+        Point pos = Point::fromPx(sceneEvent->scenePos());
+        mSelectedItemsDragCommand->setCurrentPosition(pos);
+        try {
+          mUndoStack.appendToCmdGroup(
+              mSelectedItemsDragCommand.take());  // can throw
+          mUndoStack.commitCmdGroup();            // can throw
+        } catch (Exception& e) {
+          QMessageBox::critical(&mEditor, tr("Error"), e.getMsg());
+        }
+        mSelectedItemsDragCommand.reset();
+        mSubState = SubState_Idle;
+      } else if ((sceneEvent->button() == Qt::RightButton) &&
+                 (sceneEvent->screenPos() ==
+                  sceneEvent->buttonDownScreenPos(Qt::RightButton))) {
+        rotateSelectedItems(Angle::deg90());
+      }
+      break;
+    }  // case QEvent::GraphicsSceneMouseRelease
+
+    case QEvent::GraphicsSceneMouseMove: {
+      // move selected elements to cursor position
+      QGraphicsSceneMouseEvent* sceneEvent =
+          dynamic_cast<QGraphicsSceneMouseEvent*>(qevent);
+      Q_ASSERT(sceneEvent);
+      if (!sceneEvent) break;
+      Q_ASSERT(!mSelectedItemsDragCommand.isNull());
+      Point pos = Point::fromPx(sceneEvent->scenePos());
+      mSelectedItemsDragCommand->setCurrentPosition(pos);
+      break;
+    }  // case QEvent::GraphicsSceneMouseMove
+
+    default: {
+      // Always accept graphics scene events, even if we do not react on some of
+      // the events! This will give us the full control over the graphics scene.
+      // Otherwise, the graphics scene can react on some events and disturb our
+      // state machine. Only the wheel event is ignored because otherwise the
+      // view will not allow to zoom with the mouse wheel.
+      if (qevent->type() != QEvent::GraphicsSceneWheel)
+        return ForceStayInState;
+      else
+        return PassToParentState;
+    }
+  }  // switch (qevent->type())
+  return PassToParentState;
+}
+
 bool BES_Select::startMovingSelectedItems(Board&       board,
                                           const Point& startPos) noexcept {
   Q_ASSERT(mSelectedItemsDragCommand.isNull());
@@ -764,6 +870,85 @@ bool BES_Select::removeSelectedItems() noexcept {
     QMessageBox::critical(&mEditor, tr("Error"), e.getMsg());
     return false;
   }
+}
+
+bool BES_Select::copySelectedItemsToClipboard() noexcept {
+  Board* board = mEditor.getActiveBoard();
+  if (!board) return false;
+
+  try {
+    Point cursorPos =
+        mEditorGraphicsView.mapGlobalPosToScenePos(QCursor::pos(), true, false);
+    BoardClipboardDataBuilder           builder(*board);
+    std::unique_ptr<BoardClipboardData> data = builder.generate(cursorPos);
+    qApp->clipboard()->setMimeData(data->toMimeData().release());
+  } catch (Exception& e) {
+    QMessageBox::critical(&mEditor, tr("Error"), e.getMsg());
+  }
+  return true;
+}
+
+bool BES_Select::pasteFromClipboard() noexcept {
+  Board* board = mEditor.getActiveBoard();
+  if (!board) return false;
+
+  try {
+    // get data from clipboard
+    std::unique_ptr<BoardClipboardData> boardData =
+        BoardClipboardData::fromMimeData(
+            qApp->clipboard()->mimeData());  // can throw
+    std::unique_ptr<library::editor::FootprintClipboardData> footprintData =
+        library::editor::FootprintClipboardData::fromMimeData(
+            qApp->clipboard()->mimeData());  // can throw
+    if ((!boardData) && (!footprintData)) {
+      return false;
+    }
+
+    // memorize cursor position
+    Point startPos =
+        mEditorGraphicsView.mapGlobalPosToScenePos(QCursor::pos(), true, false);
+
+    // start undo command group
+    board->clearSelection();
+    mUndoStack.beginCmdGroup(tr("Paste Board Elements"));
+    mSubState = SubState_Pasting;
+
+    // paste items from clipboard
+    bool           addedSomething = false;
+    PositiveLength grid = mEditorGraphicsView.getGridProperties().getInterval();
+    if (boardData) {
+      Point offset = (startPos - boardData->getCursorPos()).mappedToGrid(grid);
+      addedSomething = mUndoStack.appendToCmdGroup(new CmdPasteBoardItems(
+          *board, std::move(boardData), offset));  // can throw
+    } else if (footprintData) {
+      Point offset =
+          (startPos - footprintData->getCursorPos()).mappedToGrid(grid);
+      addedSomething = mUndoStack.appendToCmdGroup(new CmdPasteFootprintItems(
+          *board, std::move(footprintData), offset));  // can throw
+    }
+
+    if (addedSomething) {  // can throw
+      // start moving the selected items
+      mSelectedItemsDragCommand.reset(
+          new CmdDragSelectedBoardItems(*board, startPos));
+      return true;
+    } else {
+      // no items pasted -> abort
+      mUndoStack.abortCmdGroup();  // can throw
+      mSubState = SubState_Idle;
+    }
+  } catch (const Exception& e) {
+    QMessageBox::critical(&mEditor, tr("Error"), e.getMsg());
+    mSelectedItemsDragCommand.reset();
+    if (mSubState == SubState_Pasting) {
+      try {
+        mUndoStack.abortCmdGroup();
+      } catch (...) {
+      }
+      mSubState = SubState_Idle;
+    }
+  }
+  return false;
 }
 
 bool BES_Select::measureSelectedItems(const BI_NetLine& netline) noexcept {

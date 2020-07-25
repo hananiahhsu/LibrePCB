@@ -80,6 +80,8 @@ private:
   ProcRetVal processSubStateIdleSceneEvent(BEE_Base* event) noexcept;
   ProcRetVal processSubStateMoving(BEE_Base* event) noexcept;
   ProcRetVal processSubStateMovingSceneEvent(BEE_Base* event) noexcept;
+  ProcRetVal processSubStatePasting(BEE_Base* event) noexcept;
+  ProcRetVal processSubStatePastingSceneEvent(BEE_Base* event) noexcept;
   ProcRetVal processIdleSceneLeftClick(QGraphicsSceneMouseEvent* mouseEvent,
                                        Board& board) noexcept;
   ProcRetVal processIdleSceneRightMouseButtonReleased(
@@ -90,6 +92,8 @@ private:
   bool rotateSelectedItems(const Angle& angle) noexcept;
   bool flipSelectedItems(Qt::Orientation orientation) noexcept;
   bool removeSelectedItems() noexcept;
+  bool copySelectedItemsToClipboard() noexcept;
+  bool pasteFromClipboard() noexcept;
   /**
    * @brief Measure the length of the selected items.
    *
@@ -128,8 +132,9 @@ private:
   // Types
   /// enum for all possible substates
   enum SubState {
-    SubState_Idle,   ///< left mouse button is not pressed (default state)
-    SubState_Moving  ///< left mouse button is pressed
+    SubState_Idle,     ///< left mouse button is not pressed (default state)
+    SubState_Moving,   ///< left mouse button is pressed
+    SubState_Pasting,  ///< moving pasted items
   };
 
   // Attributes
