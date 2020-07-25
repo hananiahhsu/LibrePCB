@@ -84,10 +84,6 @@ public:
     Q_ASSERT(!wasEverExecuted());
     mVias += set;
   }
-  void removeNetPoints(const QSet<BI_NetPoint*>& set) {
-    Q_ASSERT(!wasEverExecuted());
-    mNetPoints += set;
-  }
   void removeNetLines(const QSet<BI_NetLine*>& set) {
     Q_ASSERT(!wasEverExecuted());
     mNetLines += set;
@@ -122,11 +118,6 @@ private:  // Methods
                                                   const NetSegmentItems& items);
   QVector<NetSegmentItems> getNonCohesiveNetSegmentSubSegments(
       BI_NetSegment& segment, const NetSegmentItems& removedItems) noexcept;
-  void findAllConnectedNetPointsAndNetLines(
-      BI_NetLineAnchor& anchor, QSet<BI_NetLineAnchor*>& processedAnchors,
-      QSet<BI_Via*>& vias, QSet<BI_NetPoint*>& netpoints,
-      QSet<BI_NetLine*>& netlines, QSet<BI_Via*>& availableVias,
-      QSet<BI_NetLine*>& availableNetLines) const noexcept;
 
 private:  // Data
   Board& mBoard;
@@ -135,7 +126,6 @@ private:  // Data
   QSet<BI_Device*>     mDeviceInstances;
   QSet<BI_NetSegment*> mNetSegments;
   QSet<BI_Via*>        mVias;
-  QSet<BI_NetPoint*>   mNetPoints;
   QSet<BI_NetLine*>    mNetLines;
   QSet<BI_Plane*>      mPlanes;
   QSet<BI_Polygon*>    mPolygons;

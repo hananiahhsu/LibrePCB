@@ -22,11 +22,11 @@
  ******************************************************************************/
 #include "cmdremoveboarditems.h"
 
+#include "../boardeditor/boardnetsegmentsplitter.h"
 #include "cmdremoveunusedlibraryelements.h"
 
 #include <librepcb/common/scopeguard.h>
 #include <librepcb/common/toolbox.h>
-#include <librepcb/project/boards/board.h>
 #include <librepcb/project/boards/cmd/cmdboardholeremove.h>
 #include <librepcb/project/boards/cmd/cmdboardnetsegmentadd.h>
 #include <librepcb/project/boards/cmd/cmdboardnetsegmentaddelements.h>
@@ -40,12 +40,10 @@
 #include <librepcb/project/boards/items/bi_footprint.h>
 #include <librepcb/project/boards/items/bi_footprintpad.h>
 #include <librepcb/project/boards/items/bi_hole.h>
-#include <librepcb/project/boards/items/bi_netline.h>
 #include <librepcb/project/boards/items/bi_netpoint.h>
 #include <librepcb/project/boards/items/bi_netsegment.h>
 #include <librepcb/project/boards/items/bi_plane.h>
 #include <librepcb/project/boards/items/bi_polygon.h>
-#include <librepcb/project/boards/items/bi_stroketext.h>
 #include <librepcb/project/boards/items/bi_via.h>
 
 #include <QtCore>
@@ -98,11 +96,6 @@ bool CmdRemoveBoardItems::performExecute() {
   foreach (BI_Via* via, mVias) {
     Q_ASSERT(via->isAddedToBoard());
     netSegmentItemsToRemove[&via->getNetSegment()].vias.insert(via);
-  }
-  foreach (BI_NetPoint* netpoint, mNetPoints) {
-    Q_ASSERT(netpoint->isAddedToBoard());
-    netSegmentItemsToRemove[&netpoint->getNetSegment()].netpoints.insert(
-        netpoint);
   }
   foreach (BI_NetLine* netline, mNetLines) {
     Q_ASSERT(netline->isAddedToBoard());
@@ -246,61 +239,28 @@ CmdRemoveBoardItems::getNonCohesiveNetSegmentSubSegments(
   // only works with segments which are added to board!!!
   Q_ASSERT(segment.isAddedToBoard());
 
-  // get all vias and netlines of the segment to keep
-  QSet<BI_Via*> vias = Toolbox::toSet(segment.getVias()) - removedItems.vias;
-  QSet<BI_NetLine*> netlines =
-      Toolbox::toSet(segment.getNetLines()) - removedItems.netlines;
-
-  // find all separate segments of the netsegment
+  BoardNetSegmentSplitter splitter;
+  foreach (BI_Via* via, Toolbox::toSet(segment.getVias()) - removedItems.vias) {
+    splitter.addVia(via);
+  }
+  foreach (BI_NetLine* netline,
+           Toolbox::toSet(segment.getNetLines()) - removedItems.netlines) {
+    splitter.addNetLine(netline);
+  }
   QVector<NetSegmentItems> segments;
-  while (netlines.count() + vias.count() > 0) {
-    NetSegmentItems         seg;
-    QSet<BI_NetLineAnchor*> processedAnchors;
-    BI_NetLineAnchor*       nextAnchor =
-        netlines.count() > 0 ? &netlines.values().first()->getStartPoint()
-                             : vias.values().first();
-    findAllConnectedNetPointsAndNetLines(*nextAnchor, processedAnchors,
-                                         seg.vias, seg.netpoints, seg.netlines,
-                                         vias, netlines);
-    vias -= seg.vias;
-    netlines -= seg.netlines;
-    segments.append(seg);
-  }
-  Q_ASSERT(vias.isEmpty());
-  Q_ASSERT(netlines.isEmpty());
-  return segments;
-}
-
-void CmdRemoveBoardItems::findAllConnectedNetPointsAndNetLines(
-    BI_NetLineAnchor& anchor, QSet<BI_NetLineAnchor*>& processedAnchors,
-    QSet<BI_Via*>& vias, QSet<BI_NetPoint*>& netpoints,
-    QSet<BI_NetLine*>& netlines, QSet<BI_Via*>& availableVias,
-    QSet<BI_NetLine*>& availableNetLines) const noexcept {
-  Q_ASSERT(!processedAnchors.contains(&anchor));
-  processedAnchors.insert(&anchor);
-
-  if (BI_NetPoint* anchorPoint = dynamic_cast<BI_NetPoint*>(&anchor)) {
-    Q_ASSERT(!netpoints.contains(anchorPoint));
-    netpoints.insert(anchorPoint);
-  } else if (BI_Via* anchorVia = dynamic_cast<BI_Via*>(&anchor)) {
-    Q_ASSERT(!vias.contains(anchorVia));
-    vias.insert(anchorVia);
-    availableVias.remove(anchorVia);
-  }
-
-  foreach (BI_NetLine* line, anchor.getNetLines()) {
-    if (availableNetLines.contains(line) && (!netlines.contains(line))) {
-      netlines.insert(line);
-      availableNetLines.remove(line);
-      BI_NetLineAnchor* p2 = line->getOtherPoint(anchor);
-      Q_ASSERT(p2);
-      if (!processedAnchors.contains(p2)) {
-        findAllConnectedNetPointsAndNetLines(*p2, processedAnchors, vias,
-                                             netpoints, netlines, availableVias,
-                                             availableNetLines);
+  foreach (const BoardNetSegmentSplitter::Segment& seg, splitter.split()) {
+    NetSegmentItems items;
+    foreach (BI_NetLineAnchor* anchor, seg.anchors) {
+      if (BI_NetPoint* netpoint = dynamic_cast<BI_NetPoint*>(anchor)) {
+        items.netpoints.insert(netpoint);
+      } else if (BI_Via* via = dynamic_cast<BI_Via*>(anchor)) {
+        items.vias.insert(via);
       }
     }
+    items.netlines = Toolbox::toSet(seg.netlines);
+    segments.append(items);
   }
+  return segments;
 }
 
 /*******************************************************************************
